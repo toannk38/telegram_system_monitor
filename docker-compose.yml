@@ -1,0 +1,48 @@
+version: '3.8'
+
+services:
+  monitor:
+    image: tele_sysmonitor:latest
+    container_name: system-monitor
+    restart: always
+    volumes:
+      - ./:/app
+      - ./logs:/app/logs
+    working_dir: /app
+    command: python -m src.telegram_bot
+    networks:
+      - monitoring
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PYTHONPATH=/app
+    healthcheck:
+      test: ["CMD", "python", "-c", "import psutil; print('OK')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    
+  telegram-bot:
+    image: tele_sysmonitor:latest
+    container_name: telegram-bot-sysmonitor
+    restart: always
+    depends_on:
+      - monitor
+    volumes:
+      - ./:/app
+      - ./logs:/app/logs
+    working_dir: /app
+    command: python -m src.monitor
+    networks:
+      - monitoring
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PYTHONPATH=/app
+    healthcheck:
+      test: ["CMD", "python", "-c", "import telegram; print('OK')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+networks:
+  monitoring:
+    driver: bridge

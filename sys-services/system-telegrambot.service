@@ -1,0 +1,34 @@
+[Unit]
+Description=System Telegram Bot Service
+After=network.target system-monitor.service
+Wants=network-online.target
+Requires=system-monitor.service
+StartLimitBurst=5
+StartLimitIntervalSec=10
+
+[Service]
+Type=simple
+User=admin-uae
+Group=admin-uae
+WorkingDirectory=/home/admin-uae/system_monitor
+ExecStart=/home/admin-uae/anaconda3/envs/sysmonitor/bin/python -m src.telegram_bot
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=system-telegrambot
+
+# Resource limits
+MemoryLimit=512M
+CPUQuota=50%
+
+# Security settings
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/admin-uae/system_monitor/logs
+ReadWritePaths=/home/admin-uae/system_monitor
+
+[Install]
+WantedBy=multi-user.target

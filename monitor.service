@@ -1,0 +1,18 @@
+[Unit]
+Description=System Monitor + Telegram Bot
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=%i
+WorkingDirectory=/home/stephen/project/telegram_system_monitor
+ExecStart=/home/stephen/miniconda3/envs/sys_monitor/bin/python main.py
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=system-monitor-bot
+
+[Install]
+WantedBy=multi-user.target

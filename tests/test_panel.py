@@ -2,7 +2,7 @@ import asyncio
 import itertools
 from types import SimpleNamespace as NS
 
-from bot.panel import Panels, View
+from bot.panel import Panels, View, _fit
 
 _ids = itertools.count(1)
 
@@ -20,9 +20,6 @@ class Msg:
     async def edit_media(self, media, reply_markup=None):
         self.log.append("edit_media")
 
-    async def delete(self):
-        self.log.append(f"delete:{self.message_id}")
-
 
 class Chat:
     id = 1
@@ -39,11 +36,21 @@ class Chat:
         return Msg(self.log, photo=True)
 
 
-def run(panels, msg, view, log, typed=False):
-    async def delete_message(chat_id, mid):
-        log.append(f"delete:{mid}")
-    query = None if typed else NS(message=msg)
-    update = NS(callback_query=query, effective_chat=Chat(log), get_bot=lambda: NS(delete_message=delete_message))
+class Bot:
+    def __init__(self, log):
+        self.log = log
+
+    async def delete_message(self, chat_id, message_id):
+        self.log.append(f"delete:{message_id}")
+
+    async def edit_message_reply_markup(self, chat_id, message_id, reply_markup=None):
+        self.log.append(f"strip:{message_id}")
+
+
+def show(panels, view, log, msg=None):
+    """msg given → button press on that message; None → typed command."""
+    query = NS(message=msg) if msg is not None else None
+    update = NS(callback_query=query, effective_chat=Chat(log), get_bot=lambda: Bot(log))
     return asyncio.run(panels.show(update, view))
 
 
@@ -53,51 +60,64 @@ def photo_view(tmp_path):
     return View("chart", photo=p), p
 
 
-def test_text_to_text_edits(tmp_path):
+def test_text_to_text_edits():
     log = []
-    run(Panels(), Msg(log, photo=False), View("hi"), log)
+    show(Panels(), View("hi"), log, msg=Msg(log, photo=False))
     assert log == ["edit_text"]
 
 
 def test_photo_to_photo_edits_media_and_cleans_file(tmp_path):
     log = []
     view, path = photo_view(tmp_path)
-    run(Panels(), Msg(log, photo=True), view, log)
+    show(Panels(), view, log, msg=Msg(log, photo=True))
     assert log == ["edit_media"]
     assert not path.exists()
 
 
-def test_text_to_photo_replaces_message(tmp_path):
+def test_graph_then_menu_keeps_graph(tmp_path):
+    # Status (text) → Graph (photo) → Menu (text): status and graph stay in the chat.
     log = []
-    old = Msg(log, photo=False)
+    panels = Panels()
+    status = show(panels, View("status"), log)
     view, _ = photo_view(tmp_path)
-    new = run(Panels(), old, view, log)
-    assert log == ["send_photo", f"delete:{old.message_id}"]
-    assert new.photo
+    graph = show(panels, view, log, msg=status)
+    menu = show(panels, View("menu", disposable=True), log, msg=graph)
+    assert f"strip:{status.message_id}" in log
+    assert f"strip:{graph.message_id}" in log
+    assert not any(x.startswith("delete") for x in log)
+    assert not menu.photo
 
 
-def test_typed_command_replaces_previous_panel():
+def test_menu_is_deleted_when_superseded(tmp_path):
     log = []
     panels = Panels()
-    first = run(panels, None, View("a"), log, typed=True)
-    second = run(panels, None, View("b"), log, typed=True)
-    assert log == ["send", "send", f"delete:{first.message_id}"]
-    assert second.message_id != first.message_id
+    menu = show(panels, View("menu", disposable=True), log)
+    view, _ = photo_view(tmp_path)
+    show(panels, view, log, msg=menu)  # Menu → Graph
+    assert f"delete:{menu.message_id}" in log
 
 
-def test_non_panel_messages_are_kept():
+def test_menu_edited_into_content_is_kept(tmp_path):
+    # Menu edited in place into Status: no longer a bare menu → kept when superseded.
     log = []
     panels = Panels()
-    first = run(panels, None, View("panel"), log, typed=True)
-    bash = run(panels, None, View("bash output", panel=False), log, typed=True)
-    run(panels, None, View("panel 2"), log, typed=True)
-    # only the first panel is deleted; the bash output survives
-    deleted = [x for x in log if x.startswith("delete")]
-    assert deleted == [f"delete:{first.message_id}"]
-    assert f"delete:{bash.message_id}" not in log
+    msg = show(panels, View("menu", disposable=True), log)
+    show(panels, View("status"), log, msg=msg)
+    show(panels, View("new panel"), log)  # typed command
+    assert f"strip:{msg.message_id}" in log
+    assert f"delete:{msg.message_id}" not in log
+
+
+def test_non_panel_messages_are_never_touched():
+    log = []
+    panels = Panels()
+    first = show(panels, View("panel"), log)
+    bash = show(panels, View("bash output", panel=False), log)
+    show(panels, View("panel 2"), log)
+    assert f"strip:{first.message_id}" in log
+    assert not any(str(bash.message_id) in x for x in log if ":" in x)
 
 
 def test_long_html_falls_back_to_plain_text():
-    from bot.panel import _fit
     text, mode = _fit("<b>" + "x" * 5000 + "</b>", 4096)
     assert mode is None and len(text) <= 4096 and "<b>" not in text

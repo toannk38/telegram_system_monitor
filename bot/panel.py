@@ -8,8 +8,9 @@ the message it belongs to instead of posting a new one:
     photo → photo  edit_message_media
     text ↔ photo   delete + send (Telegram can't convert between the two)
 
-Typed commands / bottom-keyboard buttons post a new panel and delete the chat's
-previous one, so only one live panel stays in the chat.
+Typed commands / bottom-keyboard buttons post a new panel. Whenever a panel is
+superseded by a new message, it is *retired*: content screens (graph, status...)
+stay in the chat with their buttons removed; bare menus are deleted.
 """
 from __future__ import annotations
 
@@ -18,9 +19,9 @@ import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Optional, Set
 
-from telegram import InlineKeyboardMarkup, InputMediaPhoto, Message, Update
+from telegram import Bot, InlineKeyboardMarkup, InputMediaPhoto, Message, Update
 from telegram.error import BadRequest, TelegramError
 
 logger = logging.getLogger(__name__)
@@ -35,6 +36,7 @@ class View:
     markup: Optional[InlineKeyboardMarkup] = None
     photo: Optional[Path] = None  # temp file, deleted after sending
     panel: bool = True  # False → plain message that is never replaced (e.g. /bash output)
+    disposable: bool = False  # True → deleted (not kept) when superseded, e.g. the main menu
 
 
 def _strip_html(text: str) -> str:
@@ -52,6 +54,7 @@ def _fit(text: str, limit: int) -> tuple[str, Optional[str]]:
 class Panels:
     def __init__(self) -> None:
         self._last: Dict[int, int] = {}  # chat_id → message_id of the live panel
+        self._disposable: Set[tuple[int, int]] = set()  # (chat_id, message_id) of menu-only panels
 
     async def show(self, update: Update, view: View) -> Optional[Message]:
         try:
@@ -66,27 +69,37 @@ class Panels:
                 except OSError:
                     pass
 
+    def _mark(self, chat_id: int, message_id: int, view: View) -> None:
+        key = (chat_id, message_id)
+        if view.disposable:
+            self._disposable.add(key)
+        else:
+            self._disposable.discard(key)
+
     async def _update(self, update: Update, msg: Message, view: View) -> Optional[Message]:
         is_photo = bool(msg.photo)
         try:
             if view.photo is None and not is_photo:
                 text, mode = _fit(view.text, TEXT_LIMIT)
                 await msg.edit_text(text, parse_mode=mode, reply_markup=view.markup)
+                self._mark(msg.chat_id, msg.message_id, view)
                 return msg
             if view.photo is not None and is_photo:
                 caption, mode = _fit(view.text, CAPTION_LIMIT)
                 with open(view.photo, "rb") as f:
                     media = InputMediaPhoto(f, caption=caption, parse_mode=mode)
                     await msg.edit_media(media, reply_markup=view.markup)
+                self._mark(msg.chat_id, msg.message_id, view)
                 return msg
         except BadRequest as exc:
             if "not modified" in str(exc).lower():
                 return msg
             raise
-        # Kind changes (text ↔ photo): replace the message.
+        # Kind changes (text ↔ photo): post a new message, retire the old one.
         new = await self._post(update, view)
-        await self._delete(msg)
+        self._mark(msg.chat_id, new.message_id, view)
         self._last[msg.chat_id] = new.message_id
+        await self._retire(update.get_bot(), msg.chat_id, msg.message_id)
         return new
 
     async def _send_new(self, update: Update, view: View) -> Message:
@@ -95,8 +108,9 @@ class Panels:
             chat_id = update.effective_chat.id
             previous = self._last.get(chat_id)
             self._last[chat_id] = new.message_id
+            self._mark(chat_id, new.message_id, view)
             if previous and previous != new.message_id:
-                await self._delete_id(update, chat_id, previous)
+                await self._retire(update.get_bot(), chat_id, previous)
         return new
 
     @staticmethod
@@ -109,16 +123,14 @@ class Panels:
         text, mode = _fit(view.text, TEXT_LIMIT)
         return await chat.send_message(text, parse_mode=mode, reply_markup=view.markup)
 
-    @staticmethod
-    async def _delete(msg: Message) -> None:
+    async def _retire(self, bot: Bot, chat_id: int, message_id: int) -> None:
+        """Superseded panel: delete bare menus, keep content but drop its buttons."""
+        key = (chat_id, message_id)
         try:
-            await msg.delete()
-        except TelegramError as exc:  # too old (>48h) or already gone — harmless
-            logger.debug("Could not delete message %s: %s", msg.message_id, exc)
-
-    @staticmethod
-    async def _delete_id(update: Update, chat_id: int, message_id: int) -> None:
-        try:
-            await update.get_bot().delete_message(chat_id, message_id)
-        except TelegramError as exc:
-            logger.debug("Could not delete old panel %s: %s", message_id, exc)
+            if key in self._disposable:
+                self._disposable.discard(key)
+                await bot.delete_message(chat_id, message_id)
+            else:
+                await bot.edit_message_reply_markup(chat_id, message_id, reply_markup=None)
+        except TelegramError as exc:  # too old, already gone, or no buttons — harmless
+            logger.debug("Could not retire panel %s: %s", message_id, exc)

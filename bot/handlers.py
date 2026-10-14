@@ -286,7 +286,7 @@ def make_handlers(deps: BotDeps):
                 "👋 Xin chào! Tôi là System Monitor Bot.\n\n"
                 f"Bạn chưa được cấp quyền. Gửi ID <code>{user_id}</code> cho admin để được thêm vào."
             )
-        return View(text, menu.main_menu(deps, user_id))
+        return View(text, menu.main_menu(deps, user_id), disposable=True)
 
     async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         # Install (or remove) the bottom shortcuts, then show the inline menu.

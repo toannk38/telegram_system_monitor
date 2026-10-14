@@ -8,7 +8,9 @@ the message it belongs to instead of posting a new one:
     photo → photo  edit_message_media
     text ↔ photo   delete + send (Telegram can't convert between the two)
 
-Typed commands / bottom-keyboard buttons post a new panel. Whenever a panel is
+Opening the menu from a content screen also posts a new message, so the screen
+you were reading stays put. Typed commands / bottom-keyboard buttons post a new
+panel. Whenever a panel is
 superseded by a new message, it is *retired*: content screens (graph, status...)
 stay in the chat with their buttons removed; bare menus are deleted.
 """
@@ -77,6 +79,9 @@ class Panels:
             self._disposable.discard(key)
 
     async def _update(self, update: Update, msg: Message, view: View) -> Optional[Message]:
+        if view.disposable and (msg.chat_id, msg.message_id) not in self._disposable:
+            # Menu pressed on a content screen: keep that screen, open the menu below it.
+            return await self._replace(update, msg, view)
         is_photo = bool(msg.photo)
         try:
             if view.photo is None and not is_photo:
@@ -96,6 +101,9 @@ class Panels:
                 return msg
             raise
         # Kind changes (text ↔ photo): post a new message, retire the old one.
+        return await self._replace(update, msg, view)
+
+    async def _replace(self, update: Update, msg: Message, view: View) -> Message:
         new = await self._post(update, view)
         self._mark(msg.chat_id, new.message_id, view)
         self._last[msg.chat_id] = new.message_id

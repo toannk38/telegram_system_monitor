@@ -46,10 +46,10 @@ main.py ── asyncio event loop
 Gõ `/start` hoặc `/menu` để mở **menu dạng nút bấm ngay trong khung chat**. Mỗi người chỉ thấy nút đúng với quyền của mình.
 Bấm một nút thì **chính tin nhắn đó được cập nhật** sang màn hình tương ứng. Mỗi màn hình có nút riêng
 (🔄 làm mới, chọn 1h/6h/12h/24h/48h, CPU/RAM, ...) và nút **☰ Menu** để quay lại. Khi phải gửi tin mới
-(đổi giữa ảnh và chữ, hoặc gõ lệnh), nội dung cũ (biểu đồ, trạng thái...) được **giữ lại và chỉ gỡ nút**;
+(bấm ☰ Menu, đổi giữa ảnh và chữ, hoặc gõ lệnh), nội dung cũ (biểu đồ, trạng thái...) được **giữ lại và chỉ gỡ nút**;
 riêng tin menu trống thì bị xoá. Chat luôn chỉ có một tin còn nút bấm.
 
-Bàn phím dưới khung chat chỉ có hai lối tắt: **📊 Trạng thái** và **📈 Biểu đồ** (12h).
+Bàn phím dưới khung chat có ba lối tắt: **📊 Trạng thái**, **📈 Biểu đồ** (12h) và **☰ Menu**.
 Vẫn có thể gõ lệnh như bình thường:
 
 | Lệnh | Quyền | Mô tả |

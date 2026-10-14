@@ -3,7 +3,7 @@ Keyboards.
 
 - Main menu: inline buttons inside a chat message (one per feature the user may use).
   Pressing one turns that same message into the chosen screen.
-- Bottom reply keyboard: only the two most used shortcuts (status, 12h graph).
+- Bottom reply keyboard: everyday shortcuts (status, 12h graph) + the main menu.
 - Every screen has its own inline buttons plus "☰ Menu" to go back.
 
 Callback data format: "c|<view>|<arg>".
@@ -61,6 +61,7 @@ ACTIONS: List[Action] = [
 REPLY_SHORTCUTS: Dict[str, str] = {
     "📊 Trạng thái": "status",
     "📈 Biểu đồ": "graph",
+    "☰ Menu": "menu",
 }
 
 

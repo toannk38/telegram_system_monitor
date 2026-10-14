@@ -88,6 +88,26 @@ def test_graph_then_menu_keeps_graph(tmp_path):
     assert not menu.photo
 
 
+def test_menu_pressed_on_text_screen_keeps_it():
+    # Status (text) → ☰ Menu: status stays, menu opens as a new message.
+    log = []
+    panels = Panels()
+    status = show(panels, View("status"), log)
+    menu = show(panels, View("menu", disposable=True), log, msg=status)
+    assert "edit_text" not in log
+    assert f"strip:{status.message_id}" in log
+    assert menu.message_id != status.message_id
+
+
+def test_menu_screen_navigates_in_place():
+    # Menu → Status edits the menu message itself (nothing piles up).
+    log = []
+    panels = Panels()
+    menu = show(panels, View("menu", disposable=True), log)
+    show(panels, View("status"), log, msg=menu)
+    assert log == ["send", "edit_text"]
+
+
 def test_menu_is_deleted_when_superseded(tmp_path):
     log = []
     panels = Panels()

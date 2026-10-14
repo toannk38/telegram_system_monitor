@@ -43,17 +43,20 @@ main.py ── asyncio event loop
 
 ## Lệnh bot
 
-Gõ `/start` hoặc `/menu` để hiện **bàn phím chức năng** cố định ở dưới khung chat (giống các bot bán hàng).
-Mỗi người chỉ thấy nút đúng với quyền của mình. Các nút cần tham số sẽ mở thêm nút chọn nhanh: biểu đồ 1h/6h/12h/24h/48h,
-top theo CPU/RAM, tắt cảnh báo 30m…1d. Tin trạng thái có nút 🔄 làm mới tại chỗ, và `/docker` có nút xem log từng container.
+Gõ `/start` hoặc `/menu` để mở **menu dạng nút bấm ngay trong khung chat**. Mỗi người chỉ thấy nút đúng với quyền của mình.
+Bấm một nút thì **chính tin nhắn đó được cập nhật** sang màn hình tương ứng. Mỗi màn hình có nút riêng
+(🔄 làm mới, chọn 1h/6h/12h/24h/48h, CPU/RAM, ...) và nút **☰ Menu** để quay lại. Chat luôn chỉ giữ một panel,
+panel cũ được xoá khi mở panel mới.
+
+Bàn phím dưới khung chat chỉ có hai lối tắt: **📊 Trạng thái** và **📈 Biểu đồ** (12h).
 Vẫn có thể gõ lệnh như bình thường:
 
 | Lệnh | Quyền | Mô tả |
 |---|---|---|
-| `/start`, `/menu` | Mọi người | Hiện bàn phím chức năng |
+| `/start`, `/menu` | Mọi người | Mở menu nút bấm |
 | `/help`, `/id` | Mọi người | Danh sách lệnh, xem Telegram ID |
 | `/status` | User | CPU, load, RAM, swap, disk, network, nhiệt độ, uptime |
-| `/graph [1-48]` | User | Biểu đồ CPU (avg/max), RAM, nhiệt độ, network, disk I/O |
+| `/graph [1-48]` | User | Biểu đồ CPU (avg/max), RAM, nhiệt độ, network, disk I/O (mặc định 12h) |
 | `/top [cpu\|mem]` | User | Top 10 process |
 | `/alerts` | User | Cảnh báo đang mở và thời gian kéo dài |
 | `/report [1-48]` | User | Báo cáo min/avg/max kèm biểu đồ |

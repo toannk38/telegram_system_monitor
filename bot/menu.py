@@ -1,17 +1,25 @@
 """
-Button menus.
+Keyboards.
 
-- A persistent reply keyboard (bottom of the chat) with one button per action the
-  user is allowed to use — pressing it sends its label as text, routed by `ACTIONS`.
-- Inline keyboards for picking arguments (graph hours, top sort, mute duration...).
-  Callback data format: "c|<command>|<arg>" runs a command handler with that arg.
+- Main menu: inline buttons inside a chat message (one per feature the user may use).
+  Pressing one turns that same message into the chosen screen.
+- Bottom reply keyboard: only the two most used shortcuts (status, 12h graph).
+- Every screen has its own inline buttons plus "☰ Menu" to go back.
+
+Callback data format: "c|<view>|<arg>".
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Dict, List, Optional
+from typing import TYPE_CHECKING, Dict, List, Optional, Sequence
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
+from telegram import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    KeyboardButton,
+    ReplyKeyboardMarkup,
+    ReplyKeyboardRemove,
+)
 
 if TYPE_CHECKING:
     from bot.handlers import BotDeps
@@ -19,60 +27,61 @@ if TYPE_CHECKING:
 PUBLIC, USER, ADMIN = "public", "user", "admin"
 CALLBACK_PREFIX = "c"
 MAX_CALLBACK_BYTES = 64  # Telegram limit for callback_data
+DEFAULT_GRAPH_HOURS = 12
+GRAPH_HOURS = ("1", "6", "12", "24", "48")
+REPORT_HOURS = ("6", "12", "24", "48")
+MUTE_DURATIONS = ("30m", "1h", "2h", "6h", "12h", "1d")
 
 
 @dataclass(frozen=True)
 class Action:
-    key: str  # handler name, or "menu:<name>" for an inline sub-menu
+    view: str
     label: str
     level: str
-    feature: Optional[str] = None  # "docker" / "services" / "endpoints" → shown only when enabled
+    feature: Optional[str] = None  # "docker" / "services" / "endpoints" → only when enabled
 
 
 ACTIONS: List[Action] = [
     Action("status", "📊 Trạng thái", USER),
-    Action("menu:graph", "📈 Biểu đồ", USER),
-    Action("menu:top", "🔥 Top process", USER),
+    Action("graph", "📈 Biểu đồ", USER),
+    Action("top", "🔥 Top process", USER),
     Action("alerts", "🚨 Cảnh báo", USER),
-    Action("menu:report", "📋 Báo cáo", USER),
+    Action("report", "📋 Báo cáo", USER),
     Action("docker", "🐳 Docker", USER, feature="docker"),
     Action("services", "⚙️ Services", USER, feature="services"),
     Action("endpoints", "🌐 Endpoints", USER, feature="endpoints"),
     Action("ping", "🏓 Ping", USER),
-    Action("menu:mute", "🔕 Tắt/bật cảnh báo", ADMIN),
+    Action("mute", "🔕 Tắt/bật cảnh báo", ADMIN),
     Action("listusers", "👥 Users", ADMIN),
     Action("id", "🆔 ID của tôi", PUBLIC),
     Action("help", "❓ Trợ giúp", PUBLIC),
 ]
-ACTIONS_BY_LABEL: Dict[str, Action] = {a.label: a for a in ACTIONS}
+
+# Bottom keyboard: label → view. Only the everyday shortcuts.
+REPLY_SHORTCUTS: Dict[str, str] = {
+    "📊 Trạng thái": "status",
+    "📈 Biểu đồ": "graph",
+}
 
 
-def _allowed(deps: "BotDeps", user_id: str, action: Action) -> bool:
+def allowed(deps: "BotDeps", user_id: str, level: str, feature: Optional[str] = None) -> bool:
     pm, checks = deps.permission_manager, deps.checks
-    if action.level == USER and not pm.is_authorized(user_id):
+    if level == USER and not pm.is_authorized(user_id):
         return False
-    if action.level == ADMIN and not pm.is_admin(user_id):
+    if level == ADMIN and not pm.is_admin(user_id):
         return False
     enabled = {
         "docker": checks.docker is not None,
         "services": checks.services_enabled,
         "endpoints": bool(checks.endpoints),
     }
-    return action.feature is None or enabled[action.feature]
+    return feature is None or enabled[feature]
 
 
-def main_keyboard(deps: "BotDeps", user_id: str) -> ReplyKeyboardMarkup:
-    """Persistent bottom keyboard with the actions this user may use, two per row."""
-    labels = [a.label for a in ACTIONS if _allowed(deps, user_id, a)]
-    rows = [[KeyboardButton(x) for x in labels[i:i + 2]] for i in range(0, len(labels), 2)]
-    return ReplyKeyboardMarkup(rows, resize_keyboard=True, is_persistent=True,
-                               input_field_placeholder="Chọn chức năng hoặc gõ /lệnh")
+# ── Callback data ─────────────────────────────────────────────────────────────
 
-
-# ── Inline keyboards ──────────────────────────────────────────────────────────
-
-def cb(command: str, arg: str = "") -> str:
-    return f"{CALLBACK_PREFIX}|{command}|{arg}"
+def cb(view: str, arg: str = "") -> str:
+    return f"{CALLBACK_PREFIX}|{view}|{arg}"
 
 
 def parse_cb(data: str) -> Optional[tuple[str, str]]:
@@ -82,78 +91,127 @@ def parse_cb(data: str) -> Optional[tuple[str, str]]:
     return parts[1], parts[2]
 
 
-def _button(text: str, command: str, arg: str = "") -> InlineKeyboardButton:
-    return InlineKeyboardButton(text, callback_data=cb(command, arg))
+def button(text: str, view: str, arg: str = "") -> InlineKeyboardButton:
+    return InlineKeyboardButton(text, callback_data=cb(view, arg))
 
 
-def graph_menu() -> InlineKeyboardMarkup:
-    hours = ["1", "6", "12", "24", "48"]
-    return InlineKeyboardMarkup([[_button(f"{h}h", "graph", h) for h in hours]])
+def _rows(buttons: Sequence[InlineKeyboardButton], per_row: int) -> List[List[InlineKeyboardButton]]:
+    return [list(buttons[i:i + per_row]) for i in range(0, len(buttons), per_row)]
 
 
-def report_menu() -> InlineKeyboardMarkup:
-    hours = ["6", "12", "24", "48"]
-    return InlineKeyboardMarkup([[_button(f"{h}h", "report", h) for h in hours]])
+def _with_nav(rows: List[List[InlineKeyboardButton]], *extra: InlineKeyboardButton) -> InlineKeyboardMarkup:
+    """Append the navigation row: extra buttons (refresh/back) + ☰ Menu."""
+    return InlineKeyboardMarkup(rows + [[*extra, button("☰ Menu", "menu")]])
 
 
-def top_menu() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([[_button("🖥 Theo CPU", "top", "cpu"), _button("💾 Theo RAM", "top", "mem")]])
+def _choice(label: str, current: bool) -> str:
+    return f"• {label}" if current else label
 
 
-def mute_menu(muted: bool) -> InlineKeyboardMarkup:
-    rows = [
-        [_button(d, "mute", d) for d in ("30m", "1h", "2h")],
-        [_button(d, "mute", d) for d in ("6h", "12h", "1d")],
+# ── Main menus ────────────────────────────────────────────────────────────────
+
+def main_menu(deps: "BotDeps", user_id: str) -> InlineKeyboardMarkup:
+    buttons = [
+        button(a.label, a.view)
+        for a in ACTIONS
+        if allowed(deps, user_id, a.level, a.feature)
     ]
+    return InlineKeyboardMarkup(_rows(buttons, 2))
+
+
+def reply_keyboard(deps: "BotDeps", user_id: str):
+    """Bottom shortcuts for authorized users; removed for everyone else."""
+    if not deps.permission_manager.is_authorized(user_id):
+        return ReplyKeyboardRemove()
+    return ReplyKeyboardMarkup(
+        [[KeyboardButton(label) for label in REPLY_SHORTCUTS]],
+        resize_keyboard=True,
+        is_persistent=True,
+        input_field_placeholder="Chọn nhanh hoặc gõ /menu",
+    )
+
+
+# ── Per-screen keyboards ──────────────────────────────────────────────────────
+
+def back_only(*extra: InlineKeyboardButton) -> InlineKeyboardMarkup:
+    return _with_nav([], *extra)
+
+
+def refresh(view: str, arg: str = "") -> InlineKeyboardButton:
+    return button("🔄 Làm mới", view, arg)
+
+
+def status_keyboard() -> InlineKeyboardMarkup:
+    return _with_nav(
+        [
+            [refresh("status"), button(f"📈 Biểu đồ {DEFAULT_GRAPH_HOURS}h", "graph", str(DEFAULT_GRAPH_HOURS))],
+            [button("🔥 Top CPU", "top", "cpu"), button("💾 Top RAM", "top", "mem")],
+        ]
+    )
+
+
+def graph_keyboard(hours: int) -> InlineKeyboardMarkup:
+    return _with_nav(
+        [[button(_choice(f"{h}h", int(h) == hours), "graph", h) for h in GRAPH_HOURS]],
+        refresh("graph", str(hours)),
+        button("📊 Trạng thái", "status"),
+    )
+
+
+def report_keyboard(hours: int) -> InlineKeyboardMarkup:
+    return _with_nav(
+        [[button(_choice(f"{h}h", int(h) == hours), "report", h) for h in REPORT_HOURS]],
+        refresh("report", str(hours)),
+    )
+
+
+def top_keyboard(sort: str) -> InlineKeyboardMarkup:
+    by_mem = sort in ("mem", "memory", "ram")
+    return _with_nav(
+        [[button(_choice("🖥 CPU", not by_mem), "top", "cpu"), button(_choice("💾 RAM", by_mem), "top", "mem")]],
+        refresh("top", "mem" if by_mem else "cpu"),
+    )
+
+
+def alerts_keyboard(show_unmute: bool) -> InlineKeyboardMarkup:
+    extra = [button("🔔 Bật lại", "unmute")] if show_unmute else []
+    return _with_nav([], refresh("alerts"), *extra)
+
+
+def mute_keyboard(muted: bool) -> InlineKeyboardMarkup:
+    rows = _rows([button(d, "mute", d) for d in MUTE_DURATIONS], 3)
     if muted:
-        rows.append([_button("🔔 Bật lại cảnh báo", "unmute")])
-    return InlineKeyboardMarkup(rows)
+        rows.append([button("🔔 Bật lại cảnh báo", "unmute")])
+    return _with_nav(rows)
 
 
-def status_buttons() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
-        [_button("🔄 Làm mới", "status", "refresh"), _button("📈 Biểu đồ 24h", "graph", "24")],
-        [_button("🔥 Top CPU", "top", "cpu"), _button("💾 Top RAM", "top", "mem")],
-    ])
-
-
-def docker_buttons(mode: str, is_admin: bool) -> InlineKeyboardMarkup:
+def docker_keyboard(mode: str, is_admin: bool) -> InlineKeyboardMarkup:
     modes = [("🗂 Nhóm", "group"), ("⚡ CPU", "cpu"), ("💾 RAM", "mem")]
-    rows = [
-        [_button(("• " if m == mode else "") + label, "docker", m) for label, m in modes],
-        [_button("🔄 Làm mới", "docker", mode)],
-    ]
+    rows = [[button(_choice(label, m == mode), "docker", m) for label, m in modes]]
+    extra = [refresh("docker", mode)]
     if is_admin:
-        rows[1].append(_button("📜 Xem log", "dlogs_menu"))
-    return InlineKeyboardMarkup(rows)
-
-
-def unmute_button() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([[_button("🔔 Bật lại cảnh báo", "unmute")]])
+        extra.append(button("📜 Log", "dlogs_menu"))
+    return _with_nav(rows, *extra)
 
 
 def _short(name: str, width: int = 22) -> str:
-    """Keep both ends so similar names (app-worker-1 / app-worker-2) stay distinguishable."""
-    if len(name) <= width:
-        return name
-    head = (width - 1) // 2
-    return name[:head] + "…" + name[-(width - 1 - head):]
+    """Keep the tail — it carries the distinctive part (…attachment-worker)."""
+    return name if len(name) <= width else "…" + name[-(width - 1):]
 
 
-def container_log_buttons(names: List[str], limit: int = 12) -> Optional[InlineKeyboardMarkup]:
-    """One 'logs' button per container (admins); skips names too long for callback_data."""
+def container_log_keyboard(names: List[str], limit: int = 20) -> InlineKeyboardMarkup:
+    """One 'logs' button per container; skips names too long for callback_data."""
     buttons = [
-        _button(f"📜 {_short(n)}", "dlogs", n)
+        button(f"📜 {_short(n)}", "dlogs", n)
         for n in names[:limit]
         if len(cb("dlogs", n).encode()) <= MAX_CALLBACK_BYTES
     ]
-    if not buttons:
-        return None
-    return InlineKeyboardMarkup([buttons[i:i + 2] for i in range(0, len(buttons), 2)])
+    return _with_nav(_rows(buttons, 2), button("⬅️ Docker", "docker"))
 
 
-SUBMENUS = {
-    "graph": ("📈 Chọn khoảng thời gian cho biểu đồ:", graph_menu),
-    "report": ("📋 Chọn khoảng thời gian cho báo cáo:", report_menu),
-    "top": ("🔥 Sắp xếp process theo:", top_menu),
-}
+def dlogs_keyboard(name: str) -> InlineKeyboardMarkup:
+    extra = []
+    if len(cb("dlogs", name).encode()) <= MAX_CALLBACK_BYTES:
+        extra.append(refresh("dlogs", name))
+    extra.append(button("⬅️ Danh sách", "dlogs_menu"))
+    return _with_nav([], *extra)

@@ -31,6 +31,15 @@ class ContainerInfo:
     oom_killed: bool
     started_at: Optional[datetime]
     finished_at: Optional[datetime]
+    project: str = ""  # docker compose project (label), "" for standalone containers
+
+    @property
+    def short_name(self) -> str:
+        """Name without the compose project prefix (fb-mess-api → api)."""
+        prefix = f"{self.project}-"
+        if self.project and self.name.startswith(prefix) and len(self.name) > len(prefix):
+            return self.name[len(prefix):]
+        return self.name
 
     def issues(self, watching_since: Optional[datetime] = None) -> List[Tuple[str, str]]:
         """
@@ -41,7 +50,9 @@ class ContainerInfo:
         left over from a host reboot) are not reported — only new failures are.
         """
         found: List[Tuple[str, str]] = []
-        if self.health == "unhealthy":
+        # Docker keeps the last health status after a container stops — only
+        # a running container can really be unhealthy.
+        if self.health == "unhealthy" and self.status == "running":
             found.append(("unhealthy", "healthcheck: unhealthy"))
         if self.status == "restarting":
             found.append(("crashloop", "đang restart liên tục"))
@@ -97,7 +108,8 @@ class DockerMonitor:
         if self._client is None:
             import docker
 
-            self._client = docker.DockerClient(base_url=self._base_url, timeout=15)
+            # Larger pool: stats() for every container runs in parallel (each blocks ~1-2s).
+            self._client = docker.DockerClient(base_url=self._base_url, timeout=15, max_pool_size=32)
         return self._client
 
     def _selected(self, name: str, labels: Dict[str, str]) -> bool:
@@ -129,6 +141,7 @@ class DockerMonitor:
                     oom_killed=bool(state.get("OOMKilled", False)),
                     started_at=_parse_time(state.get("StartedAt")),
                     finished_at=_parse_time(state.get("FinishedAt")),
+                    project=labels.get("com.docker.compose.project", ""),
                 )
             )
         result.sort(key=lambda x: x.name)
@@ -162,7 +175,7 @@ class DockerMonitor:
 
         if not names:
             return {}
-        with ThreadPoolExecutor(max_workers=min(8, len(names))) as pool:
+        with ThreadPoolExecutor(max_workers=min(32, len(names))) as pool:
             return dict(pool.map(one, names))
 
     def logs(self, name: str, lines: int) -> str:
@@ -191,14 +204,3 @@ def _parse_stats(s: dict) -> ContainerStats:
         mem_used = round((mem["usage"] - cache) / 1024**2, 1)
         mem_limit = round(mem.get("limit", 0) / 1024**2, 1) or None
     return ContainerStats(cpu, mem_used, mem_limit)
-
-
-def format_uptime(info: ContainerInfo, now: Optional[datetime] = None) -> str:
-    from monitor.alerting import format_duration
-
-    now = now or datetime.now().astimezone()
-    if info.status == "running" and info.started_at:
-        return "up " + format_duration(now - info.started_at)
-    if info.finished_at:
-        return format_duration(now - info.finished_at) + " trước"
-    return ""

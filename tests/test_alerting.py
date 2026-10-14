@@ -152,3 +152,37 @@ def test_recipients_resolved_dynamically():
 
     asyncio.run(go())
     assert {chat for chat, _ in bot.sent} == {"1", "2"}
+
+
+def test_describe_send_error():
+    from telegram.error import BadRequest, Forbidden
+    from monitor.alerting import describe_send_error
+    assert describe_send_error(1618462877, BadRequest("Chat not found")) == (
+        "Chat 1618462877 not found — user must /start the bot or the ID is wrong"
+    )
+    assert "blocked" in describe_send_error(1, Forbidden("Forbidden: bot was blocked by the user"))
+    assert describe_send_error(1, BadRequest("Can't parse entities")) is None
+
+
+def test_unreachable_chat_logs_one_line_and_continues(caplog):
+    from telegram.error import BadRequest
+
+    class BrokenBot(FakeBot):
+        async def send_message(self, chat_id, text, parse_mode=None):
+            if chat_id == "bad":
+                raise BadRequest("Chat not found")
+            await super().send_message(chat_id, text, parse_mode)
+
+    bot = BrokenBot()
+
+    async def go():
+        from monitor.alerting import Notification
+        notifier = Notifier(bot, make_config(), recipients=lambda: ["bad", "good"])
+        notifier.dispatch(Notification("hello"), force=True)
+        await notifier.drain()
+
+    with caplog.at_level("WARNING"):
+        asyncio.run(go())
+    assert bot.sent == [("good", "hello")]  # other recipients still get it
+    records = [r for r in caplog.records if "bad" in r.getMessage()]
+    assert len(records) == 1 and records[0].levelname == "WARNING" and records[0].exc_info is None

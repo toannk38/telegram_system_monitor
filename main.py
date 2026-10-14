@@ -18,7 +18,7 @@ import time
 from datetime import datetime, timedelta
 
 from telegram import BotCommand
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler
+from telegram.ext import Application, CallbackQueryHandler, CommandHandler, MessageHandler, filters
 
 from monitor.alerting import AlertManager, AlertTracker, Notification, Notifier
 from monitor.checks import ChecksRunner
@@ -37,6 +37,34 @@ logging.basicConfig(
 )
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
+
+
+class TelegramErrorFilter(logging.Filter):
+    """
+    python-telegram-bot logs polling failures with a full traceback. For the
+    expected ones (duplicate instance, network blips) keep a one-line message —
+    the bot keeps retrying on its own.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        from telegram.error import Conflict, NetworkError
+
+        exc = record.exc_info[1] if record.exc_info else None
+        if isinstance(exc, Conflict):
+            record.msg = "Another instance is polling with the same BOT_TOKEN — stop it; only one may run (retrying)"
+        elif isinstance(exc, NetworkError):
+            record.msg = f"Telegram network error: {exc} (retrying)"
+            record.levelno, record.levelname = logging.WARNING, "WARNING"
+        else:
+            return True
+        record.args = ()
+        record.exc_info = None
+        record.exc_text = None
+        return True
+
+
+for _name in ("telegram.ext.Updater", "telegram.ext.Application"):
+    logging.getLogger(_name).addFilter(TelegramErrorFilter())
 
 CLEANUP_INTERVAL_SECONDS = 3600
 
@@ -178,11 +206,23 @@ async def main() -> None:
     handlers = make_handlers(
         BotDeps(permission_manager, csv_logger, config, collector, notifier, tracker, checks)
     )
-    for name, handler in handlers.items():
-        if name == "callback":
-            app.add_handler(CallbackQueryHandler(handler))
+    for name, handler in handlers["commands"].items():
+        app.add_handler(CommandHandler(name, handler))
+    app.add_handler(CallbackQueryHandler(handlers["callback"]))
+    # Reply-keyboard buttons arrive as plain text messages.
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handlers["menu_text"]))
+
+    async def on_error(update: object, context) -> None:
+        # Network hiccups and Telegram API errors are logged, never fatal.
+        from telegram.error import NetworkError
+
+        err = context.error
+        if isinstance(err, NetworkError):
+            logger.warning("Telegram network error: %s", err)
         else:
-            app.add_handler(CommandHandler(name, handler))
+            logger.error("Unhandled bot error: %s", err, exc_info=err)
+
+    app.add_error_handler(on_error)
 
     # systemd / docker stop the service with SIGTERM — shut down cleanly.
     stop = asyncio.Event()
@@ -196,6 +236,7 @@ async def main() -> None:
     await app.updater.start_polling(drop_pending_updates=True)
 
     menu = [
+        BotCommand("menu", "Hiện bàn phím chức năng"),
         BotCommand("status", "Trạng thái hệ thống"),
         BotCommand("graph", "Biểu đồ metrics"),
         BotCommand("top", "Top process"),

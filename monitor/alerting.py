@@ -27,6 +27,22 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+
+def describe_send_error(chat_id, exc: Exception) -> Optional[str]:
+    """
+    One-line explanation for expected delivery failures (wrong ID, bot never
+    started / blocked). Returns None for unexpected errors, which deserve a traceback.
+    """
+    from telegram.error import BadRequest, Forbidden
+
+    text = str(exc)
+    if isinstance(exc, BadRequest) and "chat not found" in text.lower():
+        return f"Chat {chat_id} not found — user must /start the bot or the ID is wrong"
+    if isinstance(exc, Forbidden):
+        return f"Chat {chat_id} unreachable — {text} (user blocked the bot or the bot was removed from the group)"
+    return None
+
+
 FIRE, REMIND, RECOVER = "fire", "remind", "recover"
 
 
@@ -255,7 +271,12 @@ class Notifier:
                         with open(graph_path, "rb") as f:
                             await self._bot.send_photo(chat_id=chat_id, photo=f)
                 except Exception as exc:
-                    logger.error("Failed to send notification to %s: %s", chat_id, exc, exc_info=True)
+                    # Delivery problems never stop the service — fix the ID / /start the bot and it recovers.
+                    reason = describe_send_error(chat_id, exc)
+                    if reason:
+                        logger.warning(reason)
+                    else:
+                        logger.error("Failed to send notification to %s: %s", chat_id, exc, exc_info=True)
         finally:
             if graph_path and graph_path.exists():
                 try:

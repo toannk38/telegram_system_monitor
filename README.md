@@ -43,9 +43,15 @@ main.py ── asyncio event loop
 
 ## Lệnh bot
 
+Gõ `/start` hoặc `/menu` để hiện **bàn phím chức năng** cố định ở dưới khung chat (giống các bot bán hàng).
+Mỗi người chỉ thấy nút đúng với quyền của mình. Các nút cần tham số sẽ mở thêm nút chọn nhanh: biểu đồ 1h/6h/12h/24h/48h,
+top theo CPU/RAM, tắt cảnh báo 30m…1d. Tin trạng thái có nút 🔄 làm mới tại chỗ, và `/docker` có nút xem log từng container.
+Vẫn có thể gõ lệnh như bình thường:
+
 | Lệnh | Quyền | Mô tả |
 |---|---|---|
-| `/start`, `/help`, `/id` | Mọi người | Chào mừng, danh sách lệnh, xem Telegram ID |
+| `/start`, `/menu` | Mọi người | Hiện bàn phím chức năng |
+| `/help`, `/id` | Mọi người | Danh sách lệnh, xem Telegram ID |
 | `/status` | User | CPU, load, RAM, swap, disk, network, nhiệt độ, uptime |
 | `/graph [1-48]` | User | Biểu đồ CPU (avg/max), RAM, nhiệt độ, network, disk I/O |
 | `/top [cpu\|mem]` | User | Top 10 process |

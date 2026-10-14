@@ -10,8 +10,12 @@ from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Optional
 
 import psutil
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update
+from telegram.error import BadRequest
 from telegram.ext import ContextTypes
+
+from bot import menu
+from bot.menu import ADMIN, PUBLIC, USER
 
 from monitor.alerting import format_duration
 from monitor.report import build_report, human_bytes
@@ -26,7 +30,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-PUBLIC, USER, ADMIN = "public", "user", "admin"
 NOT_AUTHORIZED = "❌ Bạn chưa được cấp quyền. Dùng /id và liên hệ admin."
 ADMIN_ONLY = "❌ Lệnh này chỉ dành cho Admin."
 MAX_MUTE = timedelta(days=7)
@@ -45,14 +48,9 @@ class BotDeps:
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _inline_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("📊 Status", callback_data="btn_status"),
-            InlineKeyboardButton("📈 Graph 24h", callback_data="btn_graph_24"),
-            InlineKeyboardButton("❓ Help", callback_data="btn_help"),
-        ]
-    ])
+async def _send(update: Update, text: str, **kw):
+    """Send to the current chat — works for commands, menu text and button callbacks."""
+    return await update.effective_chat.send_message(text, **kw)
 
 
 def _truncate(text: str, limit: int = 4096) -> str:
@@ -153,6 +151,7 @@ def _help_lines(deps: BotDeps, user_id: str) -> list[str]:
         "/start — Chào mừng",
         "/id — Xem Telegram ID",
         "/help — Trợ giúp",
+        "/menu — Hiện bàn phím chức năng",
     ]
     if pm.is_authorized(user_id):
         lines += [
@@ -202,16 +201,16 @@ def make_handlers(deps: BotDeps):
                 try:
                     user_id = str(update.effective_user.id)
                     if level == USER and not pm.is_authorized(user_id):
-                        await update.message.reply_text(NOT_AUTHORIZED)
+                        await _send(update, NOT_AUTHORIZED)
                         return
                     if level == ADMIN and not pm.is_admin(user_id):
-                        await update.message.reply_text(ADMIN_ONLY)
+                        await _send(update, ADMIN_ONLY)
                         return
                     await fn(update, context)
                 except Exception as exc:
                     logger.error("%s error: %s", fn.__name__, exc, exc_info=True)
                     try:
-                        await update.message.reply_text("❌ Đã xảy ra lỗi.")
+                        await _send(update, "❌ Đã xảy ra lỗi.")
                     except Exception:
                         pass
             handler.__name__ = fn.__name__
@@ -221,20 +220,28 @@ def make_handlers(deps: BotDeps):
     async def reply_html(update: Update, text: str, **kw) -> None:
         if len(text) > 4096:
             # Cutting HTML could leave an unclosed tag — fall back to plain text.
-            await update.message.reply_text(_truncate(_strip_html(text)), **kw)
+            await _send(update, _truncate(_strip_html(text)), **kw)
             return
-        await update.message.reply_text(text, parse_mode="HTML", **kw)
+        await _send(update, text, parse_mode="HTML", **kw)
 
     # ── Public commands ───────────────────────────────────────────────────────
 
     @command(PUBLIC)
     async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        text = (
-            "👋 Xin chào! Tôi là System Monitor Bot.\n\n"
-            "Dùng /help để xem danh sách lệnh.\n"
-            "Dùng /id để lấy Telegram ID của bạn."
-        )
-        await update.message.reply_text(text, reply_markup=_inline_keyboard())
+        user_id = str(update.effective_user.id)
+        text = "👋 Xin chào! Tôi là System Monitor Bot.\n\n"
+        if pm.is_authorized(user_id):
+            text += "Chọn chức năng ở bàn phím bên dưới, hoặc gõ /help để xem toàn bộ lệnh."
+        else:
+            text += (
+                f"Bạn chưa được cấp quyền. Gửi ID <code>{user_id}</code> cho admin để được thêm vào."
+            )
+        await _send(update, text, parse_mode="HTML", reply_markup=menu.main_keyboard(deps, user_id))
+
+    @command(PUBLIC)
+    async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        user_id = str(update.effective_user.id)
+        await _send(update, "📱 Chọn chức năng:", reply_markup=menu.main_keyboard(deps, user_id))
 
     @command(PUBLIC)
     async def id_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -248,13 +255,22 @@ def make_handlers(deps: BotDeps):
     @command(PUBLIC)
     async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         lines = _help_lines(deps, str(update.effective_user.id))
-        await reply_html(update, "\n".join(lines), reply_markup=_inline_keyboard())
+        await reply_html(update, "\n".join(lines), reply_markup=menu.main_keyboard(deps, str(update.effective_user.id)))
 
     # ── Authorized commands ───────────────────────────────────────────────────
 
     @command(USER)
     async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        await reply_html(update, await _status_text(deps))
+        text = await _status_text(deps)
+        query = update.callback_query
+        if query and context.args == ["refresh"]:
+            try:
+                await query.edit_message_text(text, parse_mode="HTML", reply_markup=menu.status_buttons())
+            except BadRequest as exc:
+                if "not modified" not in str(exc).lower():
+                    raise
+            return
+        await reply_html(update, text, reply_markup=menu.status_buttons())
 
     @command(USER)
     async def graph_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -263,10 +279,10 @@ def make_handlers(deps: BotDeps):
             try:
                 hours = int(context.args[0])
             except ValueError:
-                await update.message.reply_text("❌ Tham số hours phải là số nguyên.")
+                await _send(update, "❌ Tham số hours phải là số nguyên.")
                 return
         if hours < 1 or hours > 48:
-            await update.message.reply_text("❌ Số giờ phải trong khoảng 1–48.")
+            await _send(update, "❌ Số giờ phải trong khoảng 1–48.")
             return
         from bot.graph_sender import send_graph
         await send_graph(context.bot, str(update.effective_chat.id), hours, deps.csv_logger, config)
@@ -274,7 +290,7 @@ def make_handlers(deps: BotDeps):
     @command(USER)
     async def ping_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         start = time.monotonic()
-        msg = await update.message.reply_text("🏓 Pong!")
+        msg = await _send(update, "🏓 Pong!")
         elapsed_ms = (time.monotonic() - start) * 1000
         await msg.edit_text(f"🏓 Pong! <code>{elapsed_ms:.0f}ms</code>", parse_mode="HTML")
 
@@ -283,7 +299,7 @@ def make_handlers(deps: BotDeps):
         from monitor.processes import format_top
         sort = context.args[0].lower() if context.args else "cpu"
         if sort not in ("cpu", "mem", "memory", "ram"):
-            await update.message.reply_text("❌ Cú pháp: /top [cpu|mem]")
+            await _send(update, "❌ Cú pháp: /top [cpu|mem]")
             return
         await reply_html(update, await asyncio.to_thread(format_top, sort, 10))
 
@@ -303,7 +319,10 @@ def make_handlers(deps: BotDeps):
                     f"hiện tại {_fmt(st.value)} · đỉnh {_fmt(st.peak)}"
                 )
                 lines.append(f"• <b>{html.escape(key)}</b> — {format_duration(now - st.since)}\n  {info}")
-        await reply_html(update, "\n".join(lines))
+        markup = None
+        if deps.notifier.is_muted() and pm.is_admin(str(update.effective_user.id)):
+            markup = menu.unmute_button()
+        await reply_html(update, "\n".join(lines), reply_markup=markup)
 
     @command(USER)
     async def report_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -314,7 +333,7 @@ def make_handlers(deps: BotDeps):
             except ValueError:
                 hours = 0
         if not 1 <= hours <= 48:
-            await update.message.reply_text("❌ Cú pháp: /report [1-48]")
+            await _send(update, "❌ Cú pháp: /report [1-48]")
             return
         rows = await asyncio.to_thread(deps.csv_logger.read_recent, hours)
         text = build_report(rows, hours, config.MONITOR_INTERVAL, list(deps.tracker.active()))
@@ -325,11 +344,12 @@ def make_handlers(deps: BotDeps):
 
     @command(USER)
     async def docker_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        from monitor.docker_monitor import format_uptime
+        from bot.docker_view import MODES, render
         docker = deps.checks.docker
         if docker is None:
-            await update.message.reply_text("ℹ️ Giám sát Docker đang tắt (DOCKER_MONITOR=false).")
+            await _send(update, "ℹ️ Giám sát Docker đang tắt (DOCKER_MONITOR=false).")
             return
+        mode = context.args[0] if context.args and context.args[0] in MODES else "group"
         try:
             containers = await asyncio.to_thread(docker.list_containers)
         except Exception as exc:
@@ -337,40 +357,39 @@ def make_handlers(deps: BotDeps):
             return
         running = [c.name for c in containers if c.status == "running"]
         stats = await asyncio.to_thread(docker.stats, running)
-        lines = [
-            f"🐳 <b>Containers</b> ({len(running)} running / {len(containers) - len(running)} khác)",
-            "<pre>",
-        ]
-        # Problems first, then running, then stopped; stop before Telegram's 4096 limit.
-        order = {True: 0, False: 1}
-        containers.sort(key=lambda c: (order[bool(c.problem(docker.watching_since))], c.status != "running", c.name))
-        size = sum(len(x) for x in lines)
-        for i, c in enumerate(containers):
-            if size > 3500:
-                lines.append(f"... và {len(containers) - i} container khác")
-                break
-            icon = "❌" if c.problem(docker.watching_since) else ("✅" if c.status == "running" else "⏸")
-            s = stats.get(c.name)
-            usage = ""
-            if s and s.cpu_percent is not None:
-                usage = f" CPU {s.cpu_percent:.1f}%"
-            if s and s.mem_used_mb is not None:
-                usage += f" RAM {s.mem_used_mb:.0f}M"
-            extra = f" ({c.health})" if c.health and c.health != "healthy" else ""
-            if c.status != "running":
-                extra += f" exit={c.exit_code}"
-            restarts = f" ↻{c.restart_count}" if c.restart_count else ""
-            entry = f"{icon} {html.escape(c.name[:40])}\n   {c.status}{extra} {format_uptime(c)}{usage}{restarts}"
-            lines.append(entry)
-            size += len(entry) + 1
-        lines.append("</pre>")
-        await reply_html(update, "\n".join(lines))
+        text = render(containers, stats, docker.watching_since, mode)
+        markup = menu.docker_buttons(mode, pm.is_admin(str(update.effective_user.id)))
+
+        # Buttons on an existing overview switch view / refresh in place.
+        query = update.callback_query
+        if query and query.message is not None:
+            try:
+                await query.edit_message_text(text, parse_mode="HTML", reply_markup=markup)
+            except BadRequest as exc:
+                if "not modified" not in str(exc).lower():
+                    raise
+            return
+        await reply_html(update, text, reply_markup=markup)
+
+    @command(ADMIN)
+    async def dlogs_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        docker = deps.checks.docker
+        if docker is None:
+            return
+        containers = await asyncio.to_thread(docker.list_containers)
+        # Problem containers first, then running ones — most likely to need logs.
+        containers.sort(key=lambda c: (c.problem(docker.watching_since) is None, c.status != "running", c.name))
+        markup = menu.container_log_buttons([c.name for c in containers], limit=20)
+        if markup is None:
+            await _send(update, "Không có container nào.")
+            return
+        await _send(update, "📜 Chọn container để xem 50 dòng log cuối:", reply_markup=markup)
 
     @command(USER)
     async def services_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         from monitor.services import check_services
         if not deps.checks.services_enabled:
-            await update.message.reply_text(
+            await _send(update, 
                 "ℹ️ Chưa cấu hình SYSTEMD_SERVICES hoặc không có systemctl (chế độ Docker)."
             )
             return
@@ -385,7 +404,7 @@ def make_handlers(deps: BotDeps):
     async def endpoints_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         from monitor.endpoints import check_endpoints
         if not deps.checks.endpoints:
-            await update.message.reply_text("ℹ️ Chưa cấu hình ENDPOINTS.")
+            await _send(update, "ℹ️ Chưa cấu hình ENDPOINTS.")
             return
         results = await check_endpoints(deps.checks.endpoints, config.ENDPOINT_TIMEOUT)
         lines = ["🌐 <b>Endpoints</b>"]
@@ -402,7 +421,7 @@ def make_handlers(deps: BotDeps):
     @command(ADMIN)
     async def bash_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not context.args:
-            await update.message.reply_text("❌ Cú pháp: /bash <command>")
+            await _send(update, "❌ Cú pháp: /bash <command>")
             return
 
         cmd = " ".join(context.args)
@@ -415,7 +434,7 @@ def make_handlers(deps: BotDeps):
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
         except asyncio.TimeoutError:
             proc.kill()
-            await update.message.reply_text("⏱ Lệnh bị timeout sau 30 giây.")
+            await _send(update, "⏱ Lệnh bị timeout sau 30 giây.")
             return
 
         out = stdout.decode(errors="replace")
@@ -432,7 +451,7 @@ def make_handlers(deps: BotDeps):
     async def mute_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         duration = parse_duration(context.args[0]) if context.args else timedelta(hours=1)
         if duration is None:
-            await update.message.reply_text("❌ Cú pháp: /mute [30m|2h|1d] (mặc định 1h)")
+            await _send(update, "❌ Cú pháp: /mute [30m|2h|1d] (mặc định 1h)")
             return
         duration = min(duration, MAX_MUTE)
         until = deps.notifier.mute(duration)
@@ -443,20 +462,28 @@ def make_handlers(deps: BotDeps):
         )
 
     @command(ADMIN)
+    async def mute_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        muted = deps.notifier.is_muted()
+        text = "🔕 Tạm tắt cảnh báo trong:"
+        if muted:
+            text = f"🔕 Đang tắt cảnh báo đến <b>{deps.notifier.muted_until:%H:%M %d/%m}</b>.\nGia hạn hoặc bật lại:"
+        await _send(update, text, parse_mode="HTML", reply_markup=menu.mute_menu(muted))
+
+    @command(ADMIN)
     async def unmute_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         deps.notifier.unmute()
         active = deps.tracker.active()
         suffix = f"\n🔴 Đang có {len(active)} cảnh báo mở — xem /alerts" if active else ""
-        await update.message.reply_text("🔔 Đã bật lại cảnh báo." + suffix)
+        await _send(update, "🔔 Đã bật lại cảnh báo." + suffix)
 
     @command(ADMIN)
     async def dlogs_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         docker = deps.checks.docker
         if docker is None:
-            await update.message.reply_text("ℹ️ Giám sát Docker đang tắt (DOCKER_MONITOR=false).")
+            await _send(update, "ℹ️ Giám sát Docker đang tắt (DOCKER_MONITOR=false).")
             return
         if not context.args:
-            await update.message.reply_text("❌ Cú pháp: /dlogs <container> [số dòng, tối đa 200]")
+            await _send(update, "❌ Cú pháp: /dlogs <container> [số dòng, tối đa 200]")
             return
         name = context.args[0]
         try:
@@ -476,7 +503,7 @@ def make_handlers(deps: BotDeps):
         @command(ADMIN)
         async def handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             if not context.args:
-                await update.message.reply_text(f"❌ Cú pháp: {syntax}")
+                await _send(update, f"❌ Cú pháp: {syntax}")
                 return
             target = context.args[0]
             action(target)
@@ -500,39 +527,47 @@ def make_handlers(deps: BotDeps):
         )
         await reply_html(update, text)
 
-    # ── Callback handler ──────────────────────────────────────────────────────
+    # ── Button routing ────────────────────────────────────────────────────────
+
+    async def show_submenu(update: Update, name: str) -> None:
+        user_id = str(update.effective_user.id)
+        if not pm.is_authorized(user_id):
+            await _send(update, NOT_AUTHORIZED)
+            return
+        title, build = menu.SUBMENUS[name]
+        await _send(update, title, reply_markup=build())
+
+    async def menu_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Reply-keyboard button pressed: its label arrives as a plain text message."""
+        action = menu.ACTIONS_BY_LABEL.get((update.message.text or "").strip())
+        if action is None:
+            if update.effective_chat.type == "private":
+                await _send(update, "🤔 Không hiểu yêu cầu. Chọn chức năng ở bàn phím bên dưới hoặc gõ /help.",
+                            reply_markup=menu.main_keyboard(deps, str(update.effective_user.id)))
+            return
+        context.args = []
+        if action.key == "menu:mute":
+            await handlers["mute_menu"](update, context)
+        elif action.key.startswith("menu:"):
+            await show_submenu(update, action.key.split(":", 1)[1])
+        else:
+            await handlers[action.key](update, context)
 
     async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        try:
-            query = update.callback_query
-            await query.answer()
-            user_id = str(query.from_user.id)
-            data = query.data
+        """Inline button pressed: callback_data "c|<command>|<arg>"."""
+        query = update.callback_query
+        parsed = menu.parse_cb(query.data or "")
+        if parsed is None or parsed[0] not in handlers:
+            await query.answer("Nút này đã hết hạn — gõ /menu để mở lại.", show_alert=False)
+            return
+        command_name, arg = parsed
+        await query.answer("⏳ Đang xử lý..." if command_name in ("graph", "report", "top", "docker", "dlogs_menu") else None)
+        context.args = [arg] if arg else []
+        await handlers[command_name](update, context)
 
-            if data == "btn_help":
-                await query.edit_message_text(
-                    "\n".join(_help_lines(deps, user_id)), parse_mode="HTML", reply_markup=_inline_keyboard()
-                )
-
-            elif data in ("btn_status", "btn_graph_24"):
-                if not pm.is_authorized(user_id):
-                    await query.edit_message_text(NOT_AUTHORIZED, reply_markup=_inline_keyboard())
-                    return
-
-                if data == "btn_status":
-                    text = await _status_text(deps)
-                    await query.edit_message_text(text, parse_mode="HTML", reply_markup=_inline_keyboard())
-
-                elif data == "btn_graph_24":
-                    await query.edit_message_text("📈 Đang tạo biểu đồ 24h...", reply_markup=_inline_keyboard())
-                    from bot.graph_sender import send_graph
-                    await send_graph(context.bot, str(query.message.chat_id), 24, deps.csv_logger, config)
-
-        except Exception as exc:
-            logger.error("button_callback error: %s", exc, exc_info=True)
-
-    return {
+    handlers = {
         "start": start_command,
+        "menu": menu_command,
         "id": id_command,
         "help": help_command,
         "status": status_command,
@@ -547,11 +582,15 @@ def make_handlers(deps: BotDeps):
         "bash": bash_command,
         "mute": mute_command,
         "unmute": unmute_command,
+        "mute_menu": mute_menu,
+        "dlogs_menu": dlogs_menu,
         "dlogs": dlogs_command,
         "allow": allow_command,
         "unallow": unallow_command,
         "addalert": addalert_command,
         "removealert": removealert_command,
         "listusers": listusers_command,
-        "callback": button_callback,
     }
+    # mute_menu is only reachable from the keyboard; callback/menu_text are not commands.
+    commands = {k: v for k, v in handlers.items() if k not in ("mute_menu", "dlogs_menu")}
+    return {"commands": commands, "callback": button_callback, "menu_text": menu_text}

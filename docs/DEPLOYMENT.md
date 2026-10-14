@@ -304,6 +304,9 @@ Trong lúc tắt, trạng thái vẫn được theo dõi và có thể xem bằn
 
 | Triệu chứng | Nguyên nhân / cách xử lý |
 |---|---|
+| `Chat <id> not found — user must /start the bot or the ID is wrong` | Người nhận chưa bấm **Start** với bot, hoặc sai ID. Mở bot và gửi `/start`, hoặc kiểm tra ID bằng `/id`. Bot vẫn chạy và gửi bình thường cho các người nhận khác |
+| `Chat <id> unreachable — ... blocked ...` | Người dùng đã chặn bot, hoặc bot bị xoá khỏi nhóm |
+| `Another instance is polling with the same BOT_TOKEN` | Có 2 bản bot cùng chạy (ví dụ vừa chạy tay vừa chạy systemd/Docker). Dừng một bản |
 | `BOT_TOKEN is not set. Exiting.` | Thiếu `.env`, hoặc service chạy sai `WorkingDirectory` |
 | Docker: `Permission denied: 'logs/...'` | `logs/`, `data/` thuộc root. Chạy `sudo chown -R $(id -u):$(id -g) logs data` |
 | `/docker`: không kết nối được Docker API | Docker Compose: thiếu `COMPOSE_PROFILES=docker`. systemd: proxy chưa chạy, hoặc sai `DOCKER_API_URL` |

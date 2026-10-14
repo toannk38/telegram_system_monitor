@@ -1,0 +1,25 @@
+# Rendered by scripts/install-systemd.sh — edit the template, not the installed copy.
+[Unit]
+Description=System Monitor + Telegram Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=@RUN_USER@
+Group=@RUN_GROUP@
+WorkingDirectory=@PROJECT_DIR@
+# .env in WorkingDirectory is loaded by python-dotenv.
+ExecStart=@PROJECT_DIR@/.venv/bin/python main.py
+Environment=PYTHONUNBUFFERED=1
+Restart=always
+RestartSec=10
+# main.py handles SIGTERM and shuts the bot down cleanly.
+KillSignal=SIGTERM
+TimeoutStopSec=30
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=system-monitor-bot
+
+[Install]
+WantedBy=multi-user.target

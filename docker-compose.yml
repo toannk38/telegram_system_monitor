@@ -1,0 +1,58 @@
+services:
+  system-monitor:
+    build: .
+    image: system-monitor:latest
+    container_name: system-monitor
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      LOG_DIR: /app/logs
+      DATA_DIR: /app/data
+      # Disk usage is measured on the host root mounted below.
+      DISK_PATH: /host
+      # Host network counters (the container's own /proc/net/dev only sees its namespace).
+      NET_DEV_PATH: /host/proc/1/net/dev
+      # Docker monitoring (DOCKER_MONITOR=true) goes through the read-only proxy below.
+      DOCKER_API_URL: tcp://docker-socket-proxy:2375
+    # Run as the host user that owns ./logs and ./data (set UID/GID in .env if not 1000).
+    user: "${UID:-1000}:${GID:-1000}"
+    volumes:
+      - ./logs:/app/logs
+      - ./data:/app/data
+      - /:/host:ro,rslave
+      # Use the host timezone for timestamps and graphs.
+      - /etc/localtime:/etc/localtime:ro
+    # Uncomment so /top (and top processes in CPU/RAM alerts) and /bash ps/top
+    # show host processes instead of only this container's. Note: this also
+    # lets the container signal host processes owned by the same UID.
+    # pid: host
+    depends_on:
+      docker-socket-proxy:
+        condition: service_started
+        required: false  # only started with the "docker" profile
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Read-only Docker API for container monitoring. Enabled with the "docker"
+  # profile: set COMPOSE_PROFILES=docker (and DOCKER_MONITOR=true) in .env.
+  # Only GET /containers/* (list, inspect, stats, logs) is allowed — the bot
+  # cannot start/stop/exec containers. Not published to the host.
+  docker-socket-proxy:
+    image: tecnativa/docker-socket-proxy:0.2.0
+    container_name: system-monitor-docker-proxy
+    profiles: ["docker"]
+    restart: unless-stopped
+    environment:
+      CONTAINERS: 1
+      POST: 0
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"

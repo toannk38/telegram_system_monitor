@@ -1,6 +1,0 @@
-python-telegram-bot>=20.0
-psutil
-python-dotenv
-matplotlib
-pytest
-hypothesis

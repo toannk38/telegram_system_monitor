@@ -2,38 +2,19 @@
 
 ## Python Environment
 
-Project này sử dụng **Miniconda** với environment tên `sys_monitor`.
-
-Mọi lệnh Python, pip, hoặc script đều phải chạy trong environment này:
-
-```bash
-conda run -n sys_monitor python ...
-conda run -n sys_monitor pip install ...
-conda run -n sys_monitor python main.py
-```
-
-Hoặc activate trước:
+Project dùng **uv** để quản lý Python và dependencies (`pyproject.toml` + `uv.lock`).
+Python version được ghim trong `.python-version`.
 
 ```bash
-conda activate sys_monitor
+uv sync                    # tạo/cập nhật .venv (gồm nhóm dev)
+uv run python main.py      # chạy bot
+uv run pytest -q           # chạy tests
+uv add <package>           # thêm dependency
+uv add --dev <package>     # thêm dependency cho dev
 ```
 
-### Cài dependencies
+> Không dùng `pip install` trực tiếp, và không sửa tay `uv.lock`.
 
-```bash
-conda run -n sys_monitor pip install -r requirements.txt
-```
+## Triển khai
 
-### Chạy project
-
-```bash
-conda run -n sys_monitor python main.py
-```
-
-### Chạy tests
-
-```bash
-conda run -n sys_monitor pytest --tb=short
-```
-
-> Không dùng `python` hay `pip` trực tiếp nếu chưa activate env `sys_monitor`.
+Xem `docs/DEPLOYMENT.md` (systemd hoặc Docker Compose).

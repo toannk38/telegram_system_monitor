@@ -1,0 +1,12 @@
+.git
+.venv
+.env
+logs
+data
+tests
+backup
+BK
+**/__pycache__
+*.pyc
+.kiro
+docs

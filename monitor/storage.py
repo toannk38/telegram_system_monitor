@@ -5,28 +5,82 @@ import logging
 import os
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import List, Dict
+from typing import List, Dict, Optional
 
 from monitor.collector import SystemMetrics
 
 logger = logging.getLogger(__name__)
 
-CSV_COLUMNS = ["timestamp", "cpu_percent", "mem_percent", "mem_used_mb", "mem_total_mb", "cpu_temp_c"]
+CSV_COLUMNS = [
+    "timestamp",
+    "cpu_percent",
+    "mem_percent",
+    "mem_used_mb",
+    "mem_total_mb",
+    "cpu_temp_c",
+    "disk_percent",
+    "disk_used_gb",
+    "disk_total_gb",
+    "cpu_max",
+    "mem_max",
+    "cpu_temp_max",
+    "swap_percent",
+    "load1",
+    "load5",
+    "load15",
+    "gpu_temp_c",
+    "net_rx_bps",
+    "net_tx_bps",
+    "disk_read_bps",
+    "disk_write_bps",
+]
 
 
 def _metrics_filename(date: datetime, log_dir: str) -> Path:
     return Path(log_dir) / f"system_stats_{date.strftime('%Y%m%d')}.csv"
 
 
+def parse_timestamp(value: str) -> datetime:
+    """
+    Parse a CSV timestamp into a timezone-aware datetime.
+
+    Accepts both the current format ("2026-10-14 10:00:00+07:00") and the
+    legacy naive format ("2026-10-14 10:00:00"), which is assumed to be local time.
+    """
+    ts = datetime.fromisoformat(value)
+    if ts.tzinfo is None:
+        ts = ts.astimezone()
+    return ts
+
+
+def _format_value(value: Optional[float]) -> str:
+    return "" if value is None else str(value)
+
+
 def _metrics_to_row(metrics: SystemMetrics) -> Dict[str, str]:
-    return {
-        "timestamp": metrics.timestamp.strftime("%Y-%m-%d %H:%M:%S"),
-        "cpu_percent": str(metrics.cpu_percent),
-        "mem_percent": str(metrics.mem_percent),
-        "mem_used_mb": str(metrics.mem_used_mb),
-        "mem_total_mb": str(metrics.mem_total_mb),
-        "cpu_temp_c": "" if metrics.cpu_temp_c is None else str(metrics.cpu_temp_c),
-    }
+    row = {"timestamp": metrics.timestamp.isoformat(sep=" ", timespec="seconds")}
+    for column in CSV_COLUMNS[1:]:
+        row[column] = _format_value(getattr(metrics, column))
+    return row
+
+
+def _read_header(path: Path) -> Optional[List[str]]:
+    """Return the header row of an existing CSV file, or None if the file is empty."""
+    with path.open("r", newline="", encoding="utf-8") as f:
+        return next(csv.reader(f), None)
+
+
+def _migrate_columns(path: Path) -> None:
+    """Rewrite a CSV written by an older version with the current columns (missing ones blank)."""
+    with path.open("r", newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    tmp = path.with_suffix(".csv.tmp")
+    with tmp.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=CSV_COLUMNS, extrasaction="ignore", restval="")
+        writer.writeheader()
+        writer.writerows(rows)
+    os.replace(tmp, path)
+    logger.info("Migrated %s to current CSV columns (%d rows)", path, len(rows))
 
 
 class CSVLogger:
@@ -38,11 +92,13 @@ class CSVLogger:
         """Append metrics to the daily CSV file, creating it with a header if new."""
         try:
             target = _metrics_filename(metrics.timestamp, self._log_dir)
-            is_new = not target.exists()
+            header = _read_header(target) if target.exists() else None
+            if header is not None and header != CSV_COLUMNS:
+                _migrate_columns(target)
 
             with target.open("a", newline="", encoding="utf-8") as f:
                 writer = csv.DictWriter(f, fieldnames=CSV_COLUMNS)
-                if is_new:
+                if header is None:
                     writer.writeheader()
                 writer.writerow(_metrics_to_row(metrics))
         except Exception as exc:
@@ -64,12 +120,13 @@ class CSVLogger:
 
     def read_recent(self, hours: int) -> List[Dict[str, str]]:
         """Read all metric rows from CSV files within the last `hours` hours."""
-        cutoff = datetime.now() - timedelta(hours=hours)
-        rows: List[Dict[str, str]] = []
+        now = datetime.now().astimezone()
+        cutoff = now - timedelta(hours=hours)
+        rows: List[tuple[datetime, Dict[str, str]]] = []
 
         # Collect candidate files: today and any recent days within the window
         days_to_check = max(1, hours // 24 + 2)
-        candidate_dates = [datetime.now() - timedelta(days=d) for d in range(days_to_check)]
+        candidate_dates = [now - timedelta(days=d) for d in range(days_to_check)]
 
         seen_files: set = set()
         for date in candidate_dates:
@@ -82,13 +139,13 @@ class CSVLogger:
                     reader = csv.DictReader(f)
                     for row in reader:
                         try:
-                            ts = datetime.strptime(row["timestamp"], "%Y-%m-%d %H:%M:%S")
-                            if ts >= cutoff:
-                                rows.append(dict(row))
-                        except (ValueError, KeyError):
+                            ts = parse_timestamp(row["timestamp"])
+                        except (ValueError, KeyError, TypeError):
                             continue
+                        if ts >= cutoff:
+                            rows.append((ts, dict(row)))
             except Exception as exc:
                 logger.error("CSVLogger read error for %s: %s", path, exc, exc_info=True)
 
-        rows.sort(key=lambda r: r.get("timestamp", ""))
-        return rows
+        rows.sort(key=lambda item: item[0])
+        return [row for _, row in rows]

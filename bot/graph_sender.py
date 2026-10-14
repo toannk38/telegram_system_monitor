@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import TYPE_CHECKING
 
@@ -17,12 +18,13 @@ _grapher = GraphGenerator()
 async def send_graph(bot, chat_id: str, hours: int, csv_logger: "CSVLogger", config: "Config") -> None:
     """Read recent data, generate a graph, send it as a photo, then delete the temp file."""
     try:
-        data = csv_logger.read_recent(hours)
+        # File I/O and rendering are blocking — keep them off the event loop.
+        data = await asyncio.to_thread(csv_logger.read_recent, hours)
         if not data:
             await bot.send_message(chat_id=chat_id, text=f"⚠️ Không có dữ liệu trong {hours}h gần đây.")
             return
 
-        graph_path = _grapher.generate(data, hours, config)
+        graph_path = await asyncio.to_thread(_grapher.generate, data, hours, config)
         if graph_path is None:
             await bot.send_message(chat_id=chat_id, text="❌ Không thể tạo biểu đồ.")
             return
